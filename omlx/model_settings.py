@@ -593,12 +593,8 @@ class ModelSettingsManager:
     def get_settings(self, model_id: str) -> ModelSettings:
         """Get settings for a specific model.
 
-        Cluster deployments expose org-prefixed model IDs (``org/name``)
-        while settings are keyed by the bare discovery name (``name``), so
-        an exact miss falls back to the prefix-stripped key. Without this,
-        every per-model setting — thinking budget, chat-template kwargs,
-        sampling defaults, context limits — silently reverts to defaults in
-        distributed mode while standalone serving honors them.
+        After an exact miss, an ``org/name`` model ID also checks the ``name``
+        settings key used by local discovery.
 
         Args:
             model_id: The model identifier.
