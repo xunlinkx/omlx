@@ -695,7 +695,10 @@ def _shard_qwen4_exp(
 
     from mlx.nn.layers.distributed import shard_inplace, shard_linear
     from mlx.utils import tree_flatten, tree_unflatten
-    from mlx_lm.models.qwen4_exp import SparseMoeBlock
+    try:
+        from mlx_lm.models.qwen4_exp import SparseMoeBlock
+    except ImportError:
+        SparseMoeBlock = None
 
     _, layers = _common_layer_owner(model)
     layers = list(layers)
@@ -785,7 +788,9 @@ def _shard_qwen4_exp(
             # sparse keep-mask that must be bit-identical on every rank, and
             # it is a negligible fraction of the weights.
         mlp = layer.mlp
-        if isinstance(mlp, SparseMoeBlock):
+        if (SparseMoeBlock is not None and isinstance(mlp, SparseMoeBlock)) or (
+            hasattr(mlp, "switch_mlp") and hasattr(mlp, "shared_expert")
+        ):
             for name, sharding in (
                 ("gate_proj", "all-to-sharded"),
                 ("down_proj", "sharded-to-all"),
