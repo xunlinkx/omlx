@@ -1460,7 +1460,14 @@ def run_worker(args: argparse.Namespace) -> int:
             assignments=[_runtime_assignment(item) for item in assignments],
         )
 
-        maybe_apply_pre_load_patches(args.model)
+        from pathlib import Path
+        from omlx.model_settings import ModelSettingsManager
+        try:
+            settings_mgr = ModelSettingsManager(Path.home() / ".omlx")
+            worker_settings = settings_mgr.get_settings(Path(args.model).name)
+        except Exception:
+            worker_settings = None
+        maybe_apply_pre_load_patches(args.model, model_settings=worker_settings)
         # MLX-LM's pipeline shard selection rejects any parameter absent
         # from the safetensors index, though it loads with strict=False
         # moments later. Architectures oMLX patches in (glm_moe_dsa's

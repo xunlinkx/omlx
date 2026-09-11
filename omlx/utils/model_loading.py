@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import logging
 from pathlib import Path
 from typing import Any
@@ -641,7 +642,7 @@ def maybe_apply_pre_load_patches(
                 model_name,
             )
 
-    if for_vlm and model_type == "qwen4_exp":
+    if model_type == "qwen4_exp":
         from ..patches.mlx_vlm_qwen4_exp_compat import (
             apply_mlx_vlm_qwen4_exp_compat_patch,
             configure_qwen4_exp_runtime,
@@ -688,6 +689,15 @@ def maybe_apply_pre_load_patches(
             )
             set_mtp_active(False)
             mtp_active = False
+        ple_mode = (
+            "mmap"
+            if model_settings is not None
+            and getattr(model_settings, "qwen4_ple_ssd_offload", False)
+            else "resident" if model_settings is not None else None
+        )
+        os.environ["OMLX_QWEN4_PLE_PATH"] = str(Path(model_name).expanduser().resolve())
+        if ple_mode:
+            os.environ["OMLX_QWEN4_PLE_MODE"] = ple_mode
         configure_qwen4_exp_runtime(
             model_name,
             mode=(
