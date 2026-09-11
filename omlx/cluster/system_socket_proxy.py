@@ -93,14 +93,10 @@ if __name__ == "__main__":
 
 def _system_python() -> str | None:
     candidate = Path(
-        os.environ.get("OMLX_CLUSTER_CONTROL_PROXY_PYTHON", sys.executable or "/usr/bin/python3")
+        os.environ.get("OMLX_CLUSTER_CONTROL_PROXY_PYTHON", "/usr/bin/python3")
     )
     if candidate.is_file() and os.access(candidate, os.X_OK):
         return str(candidate)
-    for fallback in ("/usr/bin/python3", "/usr/local/bin/python3"):
-        candidate = Path(fallback)
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
     return None
 
 
@@ -124,12 +120,10 @@ def should_proxy_control_socket(host: str) -> bool:
         loopback = ipaddress.ip_address(host).is_loopback
     except ValueError:
         loopback = host.strip().lower() in {"localhost", "localhost.local"}
-    use_proxy = sys.platform == "darwin" and not loopback and _system_python() is not None
-    logger.info(
-        "control transport: %s (auto: platform=%s loopback=%s system_python=%s)",
-        "system-proxy" if use_proxy else "direct",
-        sys.platform, loopback, _system_python() is not None,
+    use_proxy = (
+        sys.platform == "darwin" and not loopback and _system_python() is not None
     )
+    logger.debug("control transport: system proxy fallback available=%s", use_proxy)
     return use_proxy
 
 

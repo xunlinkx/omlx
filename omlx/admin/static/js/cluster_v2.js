@@ -220,11 +220,13 @@ function clusterV2Wizard() {
             coordinator_addr: null,
             seconds_remaining: 0,
             error: null,
+            cleanup_pending: false,
             busy: false,
             target_name: '',
         },
         joinApprovedNotified: false,
         joinDeniedNotified: false,
+        joinRevision: 0,
 
         // ---- add by IP (when multicast discovery is unavailable) -------------
         manualAddr: '',
@@ -499,9 +501,11 @@ function clusterV2Wizard() {
         // restores the panel and the coordinator's approval completes on the
         // next tick without any user action.
         async refreshJoinState() {
+            if (this.join.busy) return;
+            const revision = this.joinRevision;
             try {
                 const snapshot = await this.apiFetch(CLUSTER_V2_API.pairJoin);
-                if (!snapshot) return;
+                if (!snapshot || revision !== this.joinRevision) return;
                 const previous = this.join.state;
                 this.join = { ...this.join, ...snapshot, busy: false };
                 if (
@@ -530,6 +534,7 @@ function clusterV2Wizard() {
                     await this.cancelJoin({ silent: true });
                 }
             } catch (error) {
+                if (revision !== this.joinRevision) return;
                 // A 404 means this backend predates the joiner endpoints —
                 // stay idle rather than tearing down the rest of the wizard.
                 if (error?.status !== 404) {
@@ -1519,12 +1524,14 @@ function clusterV2Wizard() {
 
         async beginJoinAddr(coordinatorAddr, targetName) {
             if (this.join.busy) return;
+            const revision = ++this.joinRevision;
             this.join.busy = true;
             try {
                 const snapshot = await this.apiFetch(CLUSTER_V2_API.pairJoin, {
                     method: 'POST',
                     body: JSON.stringify({ coordinator_addr: coordinatorAddr }),
                 });
+                if (revision !== this.joinRevision) return;
                 this.join = {
                     ...this.join,
                     ...snapshot,
@@ -1535,6 +1542,7 @@ function clusterV2Wizard() {
                 this.joinDeniedNotified = false;
                 this.cancelPairing();
             } catch (error) {
+                if (revision !== this.joinRevision) return;
                 this.join.busy = false;
                 this.notify(
                     'error',
@@ -1551,11 +1559,14 @@ function clusterV2Wizard() {
         },
 
         async cancelJoin(options = {}) {
+            const revision = ++this.joinRevision;
+            this.join.busy = true;
             try {
                 const snapshot = await this.apiFetch(
                     CLUSTER_V2_API.pairJoinCancel,
                     { method: 'POST' },
                 );
+                if (revision !== this.joinRevision) return;
                 this.join = {
                     ...this.join,
                     ...(snapshot || { state: 'idle' }),
@@ -1563,9 +1574,16 @@ function clusterV2Wizard() {
                     target_name: '',
                 };
                 if (!options.silent) {
-                    this.notify('info', 'Join cancelled.');
+                    this.notify(
+                        snapshot?.cleanup_pending ? 'warning' : 'info',
+                        snapshot?.cleanup_pending
+                            ? 'Join cancelled on this Mac. Cleanup on the other Mac is pending.'
+                            : 'Join cancelled.',
+                    );
                 }
             } catch (error) {
+                if (revision !== this.joinRevision) return;
+                this.join.busy = false;
                 if (!options.silent) {
                     this.notify(
                         'error',

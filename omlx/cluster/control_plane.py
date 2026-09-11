@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import os
 import logging
+import os
 import pickle
 import secrets
 import socket
@@ -251,69 +251,86 @@ class RankControlPlane(AbstractContextManager["RankControlPlane"]):
             raise RuntimeError("rank-control handshake was not acknowledged")
         logger.info("[ControlPlane R%d] handshake complete", self.rank)
 
-    def _connect_via_proxy(self) -> None:
+    def _connect_via_proxy(self, *, deadline: float) -> None:
         logger.info(
             "[ControlPlane R%d] transport=system-proxy -> %s:%d",
-            self.rank, self.host, self.port,
+            self.rank,
+            self.host,
+            self.port,
         )
         proxy = open_system_tcp_proxy(
             self.host,
             self.port,
-            timeout=self._connect_timeout,
+            timeout=max(0.001, deadline - time.monotonic()),
         )
         stream = proxy.stream
         try:
-            self._configure(stream)
+            stream.settimeout(max(0.001, deadline - time.monotonic()))
             self._authenticate_worker_stream(stream)
+            self._configure(stream)
         except BaseException:
             proxy.close()
             raise
         self._stream_proxy = proxy
         self._stream = stream
 
-    def _connect_direct(self) -> None:
+    def _connect_direct(self, *, deadline: float, allow_proxy: bool) -> None:
         logger.info(
             "[ControlPlane R%d] transport=direct -> %s:%d",
-            self.rank, self.host, self.port,
+            self.rank,
+            self.host,
+            self.port,
         )
-        deadline = time.monotonic() + self._connect_timeout
         last_error: OSError | None = None
         while time.monotonic() < deadline:
             stream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
-                stream.settimeout(min(1.0, self._connect_timeout))
+                remaining = max(0.001, deadline - time.monotonic())
+                probe_timeout = min(1.0, self._connect_timeout / 2)
+                stream.settimeout(min(probe_timeout, remaining))
                 stream.connect((self.host, self.port))
-                self._configure(stream)
+                remaining = max(0.001, deadline - time.monotonic())
+                stream.settimeout(
+                    min(5.0, self._connect_timeout / 2, remaining)
+                    if allow_proxy
+                    else remaining
+                )
                 self._authenticate_worker_stream(stream)
+                self._configure(stream)
                 self._stream = stream
                 return
-            except RuntimeError:
+            except (RuntimeError, PermissionError):
                 stream.close()
                 raise
             except OSError as exc:
                 last_error = exc
                 stream.close()
-                time.sleep(0.05)
+                # A refused connection means rank zero has not started listening.
+                if allow_proxy and not isinstance(exc, ConnectionRefusedError):
+                    raise
+                time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
         raise TimeoutError(f"rank-control coordinator was unreachable: {last_error}")
 
     def _connect_to_coordinator(self) -> None:
         mode = os.environ.get("OMLX_CLUSTER_CONTROL_TRANSPORT", "auto").strip().lower()
+        proxy_available = should_proxy_control_socket(self.host)
+        deadline = time.monotonic() + self._connect_timeout
         if mode == "system-proxy":
-            self._connect_via_proxy()
+            self._connect_via_proxy(deadline=deadline)
             return
 
         try:
-            self._connect_direct()
-            return
-        except (PermissionError, TimeoutError, OSError) as exc:
-            if mode == "auto" and should_proxy_control_socket(self.host):
-                logger.warning(
-                    "[ControlPlane R%d] direct connection failed (%s); falling back to system-proxy",
-                    self.rank, exc,
-                )
-                self._connect_via_proxy()
-                return
-            raise
+            self._connect_direct(deadline=deadline, allow_proxy=proxy_available)
+        except OSError as exc:
+            if not proxy_available or time.monotonic() >= deadline:
+                raise
+            logger.warning(
+                "[ControlPlane R%d] direct connection failed (%s); "
+                "falling back to system-proxy",
+                self.rank,
+                exc,
+            )
+            self._connect_via_proxy(deadline=deadline)
 
     def broadcast_object(self, obj: Any) -> Any:
         """Broadcast one rank-zero-owned Python object in strict sequence."""
