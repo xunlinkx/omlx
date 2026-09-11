@@ -54,8 +54,8 @@ NEMOTRON_H = TensorStrategy(
 )
 QWEN4_EXP = TensorStrategy(
     name="qwen4_exp",
-    model_types=("qwen4_exp", "qwen4_exp_text"),
-    source="oMLX adapter for Qwen4/qwen4_exp hybrid linear/full attention with resident and SSD-sharded PLE",
+    model_types=("qwen4_exp",),
+    source="oMLX adapter: GDN/attention/MoE sharding + rank-local PLE n-gram table",
 )
 
 
@@ -404,15 +404,13 @@ def _shard_qwen3_next(
             attention.conv_dim = attention.key_dim * 2 + attention.value_dim
         else:
             attention = layer.self_attn
-            num_heads = getattr(attention, "num_attention_heads", getattr(attention, "n_heads", None))
-            num_kv_heads = getattr(attention, "num_key_value_heads", getattr(attention, "n_kv_heads", None))
             _require_divisible(
-                num_heads,
+                attention.num_attention_heads,
                 size,
                 "attention heads",
             )
             _require_divisible(
-                num_kv_heads,
+                attention.num_key_value_heads,
                 size,
                 "KV heads",
             )
@@ -436,14 +434,8 @@ def _shard_qwen3_next(
                 "sharded-to-all",
                 group=group,
             )
-            if hasattr(attention, "num_attention_heads"):
-                attention.num_attention_heads //= size
-            if hasattr(attention, "n_heads"):
-                attention.n_heads //= size
-            if hasattr(attention, "num_key_value_heads"):
-                attention.num_key_value_heads //= size
-            if hasattr(attention, "n_kv_heads"):
-                attention.n_kv_heads //= size
+            attention.num_attention_heads //= size
+            attention.num_key_value_heads //= size
 
         mlp = layer.mlp
         if isinstance(mlp, Qwen3NextSparseMoeBlock):
@@ -463,7 +455,7 @@ def _shard_qwen3_next(
                     group=group,
                 )
             layer.mlp = _wrap_sharded_moe(mlp, group, mx)
-        elif hasattr(mlp, "gate_proj"):
+        else:
             mlp.gate_proj = shard_linear(
                 mlp.gate_proj, "all-to-sharded", group=group
             )
@@ -478,196 +470,6 @@ def _shard_qwen3_next(
         _emit(
             progress,
             strategy=QWEN3_NEXT.name,
-            layer=index,
-            loaded=index + 1,
-            total=total,
-        )
-
-
-@_register(QWEN4_EXP)
-def _shard_qwen4_exp(
-    model: Any,
-    group: Any,
-    mx: Any,
-    progress: ProgressCallback | None,
-) -> None:
-    from mlx.nn.layers.distributed import shard_inplace, shard_linear
-
-    layers = list(model.layers)
-    size = int(group.size())
-    rank = int(group.rank())
-    total = len(layers)
-
-    for index, layer in enumerate(layers):
-        mx.eval(layer.parameters())
-        is_linear = (
-            getattr(layer, "layer_type", None) == "linear_attention"
-            or hasattr(layer, "linear_attn")
-            or getattr(layer, "is_linear", False)
-        )
-        if is_linear:
-            attention = layer.linear_attn
-            _require_divisible(attention.n_k, size, "linear key heads")
-            _require_divisible(attention.n_v, size, "linear value heads")
-
-            key_dim = int(attention.key_dim)
-            value_dim = int(attention.value_dim)
-            key_shard = key_dim // size
-            value_shard = value_dim // size
-            nv_shard = int(attention.n_v) // size
-
-            # In Qwen4_exp GatedDeltaNet, in_proj_qkv projects to [key_dim (Q), key_dim (K), value_dim (V)].
-            # Rank r slices Q, K, and V chunks contiguously:
-            indices = mx.concatenate(
-                [
-                    mx.arange(rank * key_shard, (rank + 1) * key_shard),
-                    mx.arange(
-                        key_dim + rank * key_shard,
-                        key_dim + (rank + 1) * key_shard,
-                    ),
-                    mx.arange(
-                        2 * key_dim + rank * value_shard,
-                        2 * key_dim + (rank + 1) * value_shard,
-                    ),
-                ]
-            )
-            attention.in_proj_qkv.weight = mx.contiguous(
-                attention.in_proj_qkv.weight[indices]
-            )
-            if getattr(attention.in_proj_qkv, "bias", None) is not None:
-                attention.in_proj_qkv.bias = mx.contiguous(
-                    attention.in_proj_qkv.bias[indices]
-                )
-
-            # in_proj_z maps hidden_size -> value_dim (split evenly across ranks)
-            attention.in_proj_z = shard_linear(
-                attention.in_proj_z,
-                "all-to-sharded",
-                group=group,
-            )
-
-            # in_proj_b and in_proj_a map hidden_size -> n_v heads
-            attention.in_proj_b = shard_linear(
-                attention.in_proj_b,
-                "all-to-sharded",
-                group=group,
-            )
-            attention.in_proj_a = shard_linear(
-                attention.in_proj_a,
-                "all-to-sharded",
-                group=group,
-            )
-
-            # Depthwise conv1d matches the in_proj_qkv channel split
-            attention.conv1d.weight = mx.contiguous(
-                attention.conv1d.weight[indices]
-            )
-            if getattr(attention.conv1d, "bias", None) is not None:
-                attention.conv1d.bias = mx.contiguous(
-                    attention.conv1d.bias[indices]
-                )
-            attention.conv1d.groups = key_shard * 2 + value_shard
-
-            # Decay and dt biases match the value heads slice
-            attention.A_log = mx.contiguous(
-                attention.A_log[rank * nv_shard : (rank + 1) * nv_shard]
-            )
-            attention.dt_bias = mx.contiguous(
-                attention.dt_bias[rank * nv_shard : (rank + 1) * nv_shard]
-            )
-
-            # Row-parallel out_proj maps value_shard -> hidden_size and all-reduces
-            attention.out_proj = shard_linear(
-                attention.out_proj,
-                "sharded-to-all",
-                group=group,
-            )
-
-            attention.n_k //= size
-            attention.n_v //= size
-            attention.key_dim = key_shard
-            attention.value_dim = value_shard
-            attention.conv_dim = key_shard * 2 + value_shard
-        else:
-            attention = layer.self_attn
-            num_heads = getattr(attention, "num_attention_heads", getattr(attention, "n_heads", None))
-            num_kv_heads = getattr(attention, "num_key_value_heads", getattr(attention, "n_kv_heads", None))
-            _require_divisible(
-                num_heads,
-                size,
-                "attention heads",
-            )
-            _require_divisible(
-                num_kv_heads,
-                size,
-                "KV heads",
-            )
-            attention.q_proj = shard_linear(
-                attention.q_proj,
-                "all-to-sharded",
-                group=group,
-            )
-            attention.k_proj = shard_linear(
-                attention.k_proj,
-                "all-to-sharded",
-                group=group,
-            )
-            attention.v_proj = shard_linear(
-                attention.v_proj,
-                "all-to-sharded",
-                group=group,
-            )
-            attention.o_proj = shard_linear(
-                attention.o_proj,
-                "sharded-to-all",
-                group=group,
-            )
-            if hasattr(attention, "num_attention_heads"):
-                attention.num_attention_heads //= size
-            if hasattr(attention, "n_heads"):
-                attention.n_heads //= size
-            if hasattr(attention, "num_key_value_heads"):
-                attention.num_key_value_heads //= size
-            if hasattr(attention, "n_kv_heads"):
-                attention.n_kv_heads //= size
-
-        mlp = layer.mlp
-        if hasattr(mlp, "switch_mlp"):
-            for name, sharding in (
-                ("gate_proj", "all-to-sharded"),
-                ("down_proj", "sharded-to-all"),
-                ("up_proj", "all-to-sharded"),
-            ):
-                shard_inplace(
-                    getattr(mlp.switch_mlp, name),
-                    sharding,
-                    group=group,
-                )
-                if hasattr(mlp, "shared_expert") and hasattr(
-                    mlp.shared_expert, name
-                ):
-                    shard_inplace(
-                        getattr(mlp.shared_expert, name),
-                        sharding,
-                        group=group,
-                    )
-            layer.mlp = _wrap_sharded_moe(mlp, group, mx)
-        elif hasattr(mlp, "gate_proj"):
-            mlp.gate_proj = shard_linear(
-                mlp.gate_proj, "all-to-sharded", group=group
-            )
-            mlp.down_proj = shard_linear(
-                mlp.down_proj, "sharded-to-all", group=group
-            )
-            mlp.up_proj = shard_linear(
-                mlp.up_proj, "all-to-sharded", group=group
-            )
-
-        mx.eval(layer.parameters())
-        mx.clear_cache()
-        _emit(
-            progress,
-            strategy=QWEN4_EXP.name,
             layer=index,
             loaded=index + 1,
             total=total,
@@ -823,6 +625,278 @@ def _shard_nemotron_h(
         )
 
 
+def _shard_qwen4_exp_ple(layer: Any, group: Any, rank: int, size: int) -> None:
+    """Rewire the PLE table to expose only this rank's local shard range.
+
+    The n-gram embedding is 128 mmap-backed shard tables (~29 GiB raw,
+    ~16 GiB quantized).  Rather than materializing them into RAM (which
+    would blow the rank budget), we leave the lazy mmap'd arrays in place
+    and only wrap the table so that each rank's forward reads only its
+    local subset.  The all_sum in the wrapper reconstructs the full
+    embedding from the partial outputs — each row is produced by exactly
+    one rank; everything else contributes zeros.
+    """
+    import mlx.nn as nn
+
+    class _LocalPLEShards(nn.Module):
+        """Rank-local slice of the qwen4_exp n-gram table, combined with all_sum."""
+
+        def __init__(self, inner: Any, lo: int, hi: int, grp: Any):
+            super().__init__()
+            self.rows = int(inner.rows)
+            self.dim = int(inner.dim)
+            self._lo = lo
+            self._hi = hi
+            self._group = grp
+            for i in range(lo, hi):
+                setattr(self, f"shard_{i}", getattr(inner, f"shard_{i}"))
+
+        def __call__(self, gid: Any) -> Any:
+            import mlx.core as mx
+            import numpy as np
+
+            flat = gid.reshape(-1)
+            shard_of = np.array(flat // self.rows, copy=False)
+            row_of = flat % self.rows
+            out = mx.zeros((flat.size, self.dim), dtype=mx.float32)
+            for s in np.unique(shard_of).tolist():
+                if not (self._lo <= s < self._hi):
+                    continue
+                sel = mx.array(np.nonzero(shard_of == s)[0])
+                emb = getattr(self, f"shard_{s}")(mx.take(row_of, sel))
+                out = mx.put_along_axis(
+                    out, sel[:, None], emb.astype(mx.float32), axis=0
+                )
+            out = mx.distributed.all_sum(out, group=self._group)
+            return out.reshape(*gid.shape, self.dim)
+
+    ple = layer.ple
+    sharded = ple.ple_embedding.ngram_embedding
+    if getattr(sharded, "shard_sizes", None) is not None:
+        # DiskBackedShardedEmbedding: the table streams from SSD via mmap and
+        # owns no resident weights — nothing to split, nothing to rewire.
+        return
+    n = int(sharded.n_shards)
+    _require_divisible(n, size, "PLE shards")
+    lo, hi = _uneven_group_ranges(n, size)[rank]
+    # Rewire — do NOT mx.eval the shards; they stay as lazy mmap'd arrays
+    # and are streamed from SSD on each forward touch.
+    ple.ple_embedding.ngram_embedding = _LocalPLEShards(sharded, lo, hi, group)
+
+
+@_register(QWEN4_EXP)
+def _shard_qwen4_exp(
+    model: Any,
+    group: Any,
+    mx: Any,
+    progress: ProgressCallback | None,
+) -> None:
+    import gc as _gc
+
+    from mlx.nn.layers.distributed import shard_inplace, shard_linear
+    from mlx.utils import tree_flatten, tree_unflatten
+    from mlx_lm.models.qwen4_exp import SparseMoeBlock
+
+    layers = list(model.model.layers)
+    size = int(group.size())
+    rank = int(group.rank())
+    total = len(layers)
+    import mlx.core as _mxdbg
+
+    def _dbg(tag):
+        try:
+            print(
+                f"[sharddbg r{rank}] {tag} active="
+                f"{_mxdbg.metal.get_active_memory() / 2**30:.2f}GiB "
+                f"peak={_mxdbg.metal.get_peak_memory() / 2**30:.2f}GiB",
+                flush=True,
+            )
+        except Exception as _e:
+            print(f"[sharddbg r{rank}] {tag} dbg-error {_e}", flush=True)
+
+    _dbg("strategy-start")
+    for index, layer in enumerate(layers):
+        _dbg(f"layer-{index} pre type={type(layer).__name__}")
+        if index == 2 and rank == 1:
+            def _shapes(tag):
+                la = layer.linear_attn
+                _m = getattr(layer.mlp, "inner", layer.mlp)
+                sw = _m.switch_mlp
+                se = _m.shared_expert
+                for nm, mod_ in (
+                    ("in_proj_qkv", la.in_proj_qkv),
+                    ("sw.gate_proj", sw.gate_proj),
+                    ("se.gate_proj", se.gate_proj),
+                ):
+                    w = getattr(mod_, "weight", None)
+                    print(
+                        f"[sharddbg r1] L2 {tag} {nm}: {type(mod_).__name__} "
+                        f"weight={None if w is None else tuple(w.shape)}",
+                        flush=True,
+                    )
+            _shapes("pre")
+        if index == 2 and rank == 1:
+            def _shapes(tag):
+                la = layer.linear_attn
+                _m = getattr(layer.mlp, "inner", layer.mlp)
+                sw = _m.switch_mlp
+                se = _m.shared_expert
+                for nm, mod_ in (
+                    ("in_proj_qkv", la.in_proj_qkv),
+                    ("sw.gate_proj", sw.gate_proj),
+                    ("se.gate_proj", se.gate_proj),
+                ):
+                    w = getattr(mod_, "weight", None)
+                    print(
+                        f"[sharddbg r1] L2 {tag} {nm}: {type(mod_).__name__} "
+                        f"weight={None if w is None else tuple(w.shape)}",
+                        flush=True,
+                    )
+            def _tree_bytes(mod, _depth=0):
+                try:
+                    total = 0
+                    kinds = {}
+                    for name, child in mod.named_modules():
+                        if name and _depth < 1 and name.count(".") == 0:
+                            sub = 0
+                            for p in child.parameters():
+                                sub += p.nbytes if hasattr(p, "nbytes") else 0
+                            kinds[name] = (
+                                type(child).__name__,
+                                round(sub / 2**20, 1),
+                            )
+                    for k, v in sorted(kinds.items()):
+                        print(f"[sharddbg r1] L2 child {k}: {v}", flush=True)
+                    return
+                except Exception as e:
+                    print(f"[sharddbg r1] tree err {e}", flush=True)
+            _tree_bytes(layer)
+            for pname, parr in [
+                ("q_proj", getattr(getattr(layer, "self_attn", None) or getattr(layer, "linear_attn"), "q_proj", None) or getattr(getattr(layer, "linear_attn", None), "in_proj_qkv", None)),
+                ("gate_proj", getattr(getattr(layer.mlp, "switch_mlp", None), "gate_proj", None)),
+            ]:
+                if parr is not None:
+                    print(
+                        f"[sharddbg r1] L2 {pname} type={type(parr).__name__} "
+                        f"has_scales={hasattr(parr, 'scales')}",
+                        flush=True,
+                    )
+        _old_children = [
+            value
+            for name, value in layer.named_modules()
+            if name and name.count(".") == 0
+        ]
+        if layer.ple is not None:
+            _dbg(f"layer-{index} ple-embed={type(layer.ple.ple_embedding.ngram_embedding).__name__}")
+            _shard_qwen4_exp_ple(layer, group, rank, size)
+        # NOTE: no leading full-layer eval. The shard ops bind lazy slices of
+        # the lazy mmap'd checkpoint arrays; the rebind below materializes
+        # ONLY the sharded slices. Materializing the full layer first makes
+        # the base un-releasable (measured: full + half resident per layer).
+        if layer.layer_type == "linear_attention":
+            attn = layer.linear_attn
+            _require_divisible(attn.n_k, size, "linear key heads")
+            _require_divisible(attn.n_v, size, "linear value heads")
+            attn.in_proj_qkv = shard_linear(
+                attn.in_proj_qkv, "all-to-sharded", group=group
+            )
+            attn.in_proj_z = shard_linear(
+                attn.in_proj_z, "all-to-sharded", group=group
+            )
+            attn.in_proj_b = shard_linear(attn.in_proj_b, "all-to-sharded", group=group)
+            attn.in_proj_a = shard_linear(attn.in_proj_a, "all-to-sharded", group=group)
+            attn.out_proj = shard_linear(attn.out_proj, "sharded-to-all", group=group)
+            key_dim = int(attn.key_dim)
+            value_dim = int(attn.value_dim)
+            key_shard = key_dim // size
+            value_shard = value_dim // size
+            indices = mx.concatenate(
+                [
+                    mx.arange(rank * key_shard, (rank + 1) * key_shard),
+                    mx.arange(
+                        key_dim + rank * key_shard,
+                        key_dim + (rank + 1) * key_shard,
+                    ),
+                    mx.arange(
+                        2 * key_dim + rank * value_shard,
+                        2 * key_dim + (rank + 1) * value_shard,
+                    ),
+                ]
+            )
+            attn.conv1d.weight = mx.contiguous(attn.conv1d.weight[indices])
+            if getattr(attn.conv1d, "bias", None) is not None:
+                attn.conv1d.bias = mx.contiguous(attn.conv1d.bias[indices])
+            attn.conv1d.groups = key_shard * 2 + value_shard
+            heads = attn.n_v // size
+            attn.A_log = mx.contiguous(attn.A_log[rank * heads : (rank + 1) * heads])
+            attn.dt_bias = mx.contiguous(
+                attn.dt_bias[rank * heads : (rank + 1) * heads]
+            )
+            attn.n_k //= size
+            attn.n_v //= size
+            attn.key_dim //= size
+            attn.value_dim //= size
+            attn.conv_dim = attn.key_dim * 2 + attn.value_dim
+        else:
+            attn = layer.self_attn
+            _require_divisible(attn.n_heads, size, "attention heads")
+            _require_divisible(attn.n_kv_heads, size, "KV heads")
+            attn.q_proj = shard_linear(attn.q_proj, "all-to-sharded", group=group)
+            attn.k_proj = shard_linear(attn.k_proj, "all-to-sharded", group=group)
+            attn.v_proj = shard_linear(attn.v_proj, "all-to-sharded", group=group)
+            attn.o_proj = shard_linear(attn.o_proj, "sharded-to-all", group=group)
+            attn.n_heads //= size
+            attn.n_kv_heads //= size
+            # The QSA indexer is intentionally replicated: it produces the
+            # sparse keep-mask that must be bit-identical on every rank, and
+            # it is a negligible fraction of the weights.
+        mlp = layer.mlp
+        if isinstance(mlp, SparseMoeBlock):
+            for name, sharding in (
+                ("gate_proj", "all-to-sharded"),
+                ("down_proj", "sharded-to-all"),
+                ("up_proj", "all-to-sharded"),
+            ):
+                shard_inplace(
+                    getattr(mlp.switch_mlp, name),
+                    sharding,
+                    group=group,
+                )
+                shard_inplace(
+                    getattr(mlp.shared_expert, name),
+                    sharding,
+                    group=group,
+                )
+            layer.mlp = _wrap_sharded_moe(mlp, group, mx)
+        # mlx's sharded params bind as lazy slices of the full materialized
+        # arrays; materializing them does NOT release the base (measured on a
+        # 2-rank ring: full + half stay resident). Force explicit contiguous
+        # copies and drop the pre-shard arrays, or every rank accumulates the
+        # FULL model plus its shard.
+        if index == 2 and rank == 1:
+            _shapes("rb-pre")
+        flat = tree_flatten(layer.parameters())
+        _dbg(f"layer-{index} rb-pre")
+        mx.eval([value for _, value in flat])
+        _dbg(f"layer-{index} rb-evaled")
+        layer.update(
+            tree_unflatten([(p, mx.array(v)) for p, v in flat])
+        )
+        _dbg(f"layer-{index} rb-updated")
+        del flat
+        del _old_children
+        _gc.collect()
+        mx.clear_cache()
+        _dbg(f"layer-{index} post")
+        _emit(
+            progress,
+            strategy=QWEN4_EXP.name,
+            layer=index,
+            loaded=index + 1,
+            total=total,
+        )
+
+
 def apply_tensor_strategy(
     model: Any,
     group: Any,
@@ -849,8 +923,8 @@ def apply_tensor_strategy(
 
 __all__ = [
     "NEMOTRON_H",
-    "QWEN4_EXP",
     "QWEN3_NEXT",
+    "QWEN4_EXP",
     "TensorStrategy",
     "apply_tensor_strategy",
     "native_shard_is_layer_local",
