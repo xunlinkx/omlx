@@ -44,6 +44,17 @@ class TestModelSettings:
         restored = ModelSettings.from_dict(d)
         assert restored.repetition_context_size == 128
 
+    def test_frequency_penalty_defaults_to_none(self):
+        settings = ModelSettings()
+        assert settings.frequency_penalty is None
+
+    def test_frequency_penalty_roundtrip(self):
+        original = ModelSettings(frequency_penalty=0.4)
+        d = original.to_dict()
+        assert d["frequency_penalty"] == 0.4
+        restored = ModelSettings.from_dict(d)
+        assert restored.frequency_penalty == 0.4
+
     def test_trust_remote_code_roundtrip(self):
         """Test trust_remote_code field survives to_dict -> from_dict roundtrip."""
         original = ModelSettings(trust_remote_code=True)

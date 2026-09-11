@@ -147,6 +147,7 @@ class ModelSettings:
         repetition_context_size: Token look-back window for the repetition penalty.
             None uses mlx-lm's default (20 tokens).
         presence_penalty: Presence penalty (None = use global default).
+        frequency_penalty: Frequency penalty (None = use global default).
         force_sampling: Force sampling even with temperature=0.
         max_tool_result_tokens: Maximum tokens in tool result (None = use global default).
         chat_template_kwargs: Extra chat template keyword arguments.
@@ -249,6 +250,7 @@ class ModelSettings:
     repetition_context_size: Optional[int] = None
     min_p: Optional[float] = None
     presence_penalty: Optional[float] = None
+    frequency_penalty: Optional[float] = None
     force_sampling: bool = False
     max_tool_result_tokens: Optional[int] = None
     chat_template_kwargs: Optional[Dict[str, Any]] = None
