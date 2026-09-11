@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import gc
 import re
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -206,16 +207,21 @@ def progressive_sharded_load(
                 if (index := _layer_index(path)) is not None
             }
         )
+        fixed_count = len(fixed)
+        del flat
+        gc.collect()
         if progress is not None:
             progress(
                 {
                     "phase": "materializing_fixed",
-                    "fixed_tensors": len(fixed),
+                    "fixed_tensors": fixed_count,
                     "layers_loaded": 0,
                     "layers_total": layer_count,
                 }
             )
         _eval_values(mx_module, fixed)
+        del fixed
+        gc.collect()
         mx_module.clear_cache()
         strategy = apply_tensor_strategy(
             model,
