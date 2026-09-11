@@ -1024,6 +1024,18 @@ def inspect_safetensors_layout(model_path: str | Path) -> ModelLayout:
     layer_sizes: dict[int, int] = {}
     tensor_names: set[str] = set()
     tensor_count = 0
+    model_cfg = _model_config(root)
+    mtype = (model_cfg.get("model_type") or "").replace("-", "_").lower()
+    text_cfg = model_cfg.get("text_config") or {}
+    text_mtype = (
+        (text_cfg.get("model_type") or "").replace("-", "_").lower()
+        if isinstance(text_cfg, dict)
+        else ""
+    )
+    is_qwen4_exp = (
+        mtype in ("qwen4_exp", "qwen4_exp_text")
+        or text_mtype in ("qwen4_exp", "qwen4_exp_text")
+    )
     for weight_file in _model_weight_files(root):
         header, payload_bytes = _safetensors_header(weight_file)
         intervals: list[tuple[int, int, str]] = []
@@ -1051,6 +1063,8 @@ def inspect_safetensors_layout(model_path: str | Path) -> ModelLayout:
             if offsets[1] > offsets[0]:
                 intervals.append((offsets[0], offsets[1], name))
             tensor_bytes = offsets[1] - offsets[0]
+            if is_qwen4_exp and ".ngram_embedding." in name:
+                tensor_bytes = 0
             layer_index = _tensor_layer_index(name)
             if layer_index is None:
                 fixed_bytes += tensor_bytes

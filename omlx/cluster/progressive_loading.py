@@ -207,20 +207,18 @@ def progressive_sharded_load(
                 if (index := _layer_index(path)) is not None
             }
         )
-        fixed_count = len(fixed)
-        del flat
-        gc.collect()
         if progress is not None:
             progress(
                 {
                     "phase": "materializing_fixed",
-                    "fixed_tensors": fixed_count,
+                    "fixed_tensors": len(fixed),
                     "layers_loaded": 0,
                     "layers_total": layer_count,
                 }
             )
         _eval_values(mx_module, fixed)
-        del fixed
+        mx_module.clear_cache()
+        del flat, fixed
         gc.collect()
         mx_module.clear_cache()
         strategy = apply_tensor_strategy(
@@ -238,6 +236,9 @@ def progressive_sharded_load(
             if _layer_index(path) is None
         ]
         _eval_values(mx_module, sharded_fixed)
+        mx_module.clear_cache()
+        del sharded_fixed
+        gc.collect()
         mx_module.clear_cache()
         if progress is not None:
             progress({"phase": "tensor_ready", "strategy": strategy})
