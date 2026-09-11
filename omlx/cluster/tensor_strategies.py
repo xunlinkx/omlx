@@ -404,13 +404,15 @@ def _shard_qwen3_next(
             attention.conv_dim = attention.key_dim * 2 + attention.value_dim
         else:
             attention = layer.self_attn
+            num_heads = getattr(attention, "num_attention_heads", getattr(attention, "n_heads", None))
+            num_kv_heads = getattr(attention, "num_key_value_heads", getattr(attention, "n_kv_heads", None))
             _require_divisible(
-                attention.num_attention_heads,
+                num_heads,
                 size,
                 "attention heads",
             )
             _require_divisible(
-                attention.num_key_value_heads,
+                num_kv_heads,
                 size,
                 "KV heads",
             )
@@ -434,8 +436,14 @@ def _shard_qwen3_next(
                 "sharded-to-all",
                 group=group,
             )
-            attention.num_attention_heads //= size
-            attention.num_key_value_heads //= size
+            if hasattr(attention, "num_attention_heads"):
+                attention.num_attention_heads //= size
+            if hasattr(attention, "n_heads"):
+                attention.n_heads //= size
+            if hasattr(attention, "num_key_value_heads"):
+                attention.num_key_value_heads //= size
+            if hasattr(attention, "n_kv_heads"):
+                attention.n_kv_heads //= size
 
         mlp = layer.mlp
         if isinstance(mlp, Qwen3NextSparseMoeBlock):
@@ -582,13 +590,15 @@ def _shard_qwen4_exp(
             attention.conv_dim = key_shard * 2 + value_shard
         else:
             attention = layer.self_attn
+            num_heads = getattr(attention, "num_attention_heads", getattr(attention, "n_heads", None))
+            num_kv_heads = getattr(attention, "num_key_value_heads", getattr(attention, "n_kv_heads", None))
             _require_divisible(
-                attention.num_attention_heads,
+                num_heads,
                 size,
                 "attention heads",
             )
             _require_divisible(
-                attention.num_key_value_heads,
+                num_kv_heads,
                 size,
                 "KV heads",
             )
@@ -612,8 +622,14 @@ def _shard_qwen4_exp(
                 "sharded-to-all",
                 group=group,
             )
-            attention.num_attention_heads //= size
-            attention.num_key_value_heads //= size
+            if hasattr(attention, "num_attention_heads"):
+                attention.num_attention_heads //= size
+            if hasattr(attention, "n_heads"):
+                attention.n_heads //= size
+            if hasattr(attention, "num_key_value_heads"):
+                attention.num_key_value_heads //= size
+            if hasattr(attention, "n_kv_heads"):
+                attention.n_kv_heads //= size
 
         mlp = layer.mlp
         if hasattr(mlp, "switch_mlp"):
