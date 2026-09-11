@@ -2893,7 +2893,7 @@ class DistributedJobSupervisor:
 
     def _wait_for_listener(self) -> None:
         assert self.port is not None
-        deadline = time.monotonic() + min(15.0, self.load_timeout)
+        deadline = time.monotonic() + max(60.0, min(120.0, self.load_timeout))
         while time.monotonic() < deadline:
             process = self.process
             if process is None or process.poll() is not None:
