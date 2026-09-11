@@ -875,19 +875,8 @@ def _shard_qwen4_exp(
         # FULL model plus its shard.
         if index == 2 and rank == 1:
             _shapes("rb-pre")
-        flat = tree_flatten(layer.parameters())
-        _dbg(f"layer-{index} rb-pre")
-        mx.eval([value for _, value in flat])
-        _dbg(f"layer-{index} rb-evaled")
-        layer.update(
-            tree_unflatten([(p, mx.array(v)) for p, v in flat])
-        )
-        _dbg(f"layer-{index} rb-updated")
-        del flat
-        del _old_children
-        _gc.collect()
+        mx.eval(layer.parameters())
         mx.clear_cache()
-        _dbg(f"layer-{index} post")
         _emit(
             progress,
             strategy=QWEN4_EXP.name,
