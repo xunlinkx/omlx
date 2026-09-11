@@ -1319,6 +1319,9 @@ def _apply_rank_wired_limit(budget_bytes: int) -> int:
 def run_worker(args: argparse.Namespace) -> int:
     """Initialize one strict rank, load only its layers, then serve on rank zero."""
 
+    from pathlib import Path
+    args.model = str(Path(args.model).expanduser().resolve())
+
     from omlx._torch_stub import install as install_torch_stub
 
     install_torch_stub()

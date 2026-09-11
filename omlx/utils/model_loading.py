@@ -464,7 +464,8 @@ def maybe_apply_pre_load_patches(
 
     apply_arrays_cache_extract_guard()
 
-    config_path = Path(model_name) / "config.json"
+    model_path = Path(model_name).expanduser().resolve()
+    config_path = model_path / "config.json"
     if not config_path.exists():
         return
     try:
@@ -690,22 +691,16 @@ def maybe_apply_pre_load_patches(
             set_mtp_active(False)
             mtp_active = False
         ple_mode = (
-            "mmap"
+            "resident"
             if model_settings is not None
-            and getattr(model_settings, "qwen4_ple_ssd_offload", False)
-            else "resident" if model_settings is not None else None
+            and not getattr(model_settings, "qwen4_ple_ssd_offload", True)
+            else "mmap"
         )
-        os.environ["OMLX_QWEN4_PLE_PATH"] = str(Path(model_name).expanduser().resolve())
-        if ple_mode:
-            os.environ["OMLX_QWEN4_PLE_MODE"] = ple_mode
+        os.environ["OMLX_QWEN4_PLE_PATH"] = str(model_path)
+        os.environ["OMLX_QWEN4_PLE_MODE"] = ple_mode
         configure_qwen4_exp_runtime(
-            model_name,
-            mode=(
-                "mmap"
-                if model_settings is not None
-                and getattr(model_settings, "qwen4_ple_ssd_offload", False)
-                else "resident" if model_settings is not None else None
-            ),
+            str(model_path),
+            mode=ple_mode,
             mtp_enabled=mtp_active,
         )
 
