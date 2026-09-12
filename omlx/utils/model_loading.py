@@ -628,11 +628,11 @@ def maybe_apply_pre_load_patches(
         # The flat mlx-lm qwen4_exp (the model a cluster rank or text-only load
         # serves) calls ``bisect_right`` for the PLE ngram shard lookup without
         # importing it, so every ngram prefill raises NameError; the VLM-gated
-        # compat path never runs here. Inject the name on the load path.
+        # compat path never runs here. Inject the name and configure PLE runtime.
         from ..patches.mlx_lm_qwen4_exp import apply_mlx_lm_qwen4_exp_patch
 
-        if apply_mlx_lm_qwen4_exp_patch():
-            logger.info("mlx-lm qwen4_exp bisect patch applied for %s", model_name)
+        if apply_mlx_lm_qwen4_exp_patch(model_name, model_settings=model_settings):
+            logger.info("mlx-lm qwen4_exp patch applied for %s", model_name)
 
     if for_vlm and (
         model_type in minimax_m3_types or text_model_type in minimax_m3_types
