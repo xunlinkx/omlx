@@ -680,7 +680,7 @@ def _run_rank(
         pipeline_index, "apply_mlx_lm_pipeline_index_patch", lambda: None
     )
     monkeypatch.setattr(
-        model_loading, "maybe_apply_pre_load_patches", lambda _model: None
+        model_loading, "maybe_apply_pre_load_patches", lambda _model, **kwargs: None
     )
     monkeypatch.setattr(
         inference_worker,
