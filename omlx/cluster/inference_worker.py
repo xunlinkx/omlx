@@ -467,6 +467,12 @@ def _server_arguments(
         prompt_cache_size=args.prompt_cache_size,
         prompt_cache_bytes=args.prompt_cache_bytes,
         max_kv_size=args.max_kv_size,
+        # mlx-lm 0.32 reads these directly from ``cli_args`` even when KV
+        # quantization is disabled. Keep the distributed shim aligned with
+        # the upstream server defaults so its generation thread can start.
+        kv_bits=None,
+        kv_group_size=64,
+        quantized_kv_start=5000,
     )
 
 

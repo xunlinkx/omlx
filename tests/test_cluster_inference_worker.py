@@ -370,6 +370,9 @@ def test_worker_execution_contract_reaches_mlx_lm_and_runtime_optimizations():
     assert server.decode_concurrency == 16
     assert server.prefill_step_size == 4096
     assert server.max_kv_size == 32768
+    assert server.kv_bits is None
+    assert server.kv_group_size == 64
+    assert server.quantized_kv_start == 5000
     assert server.pipeline is True
 
     assert _server_arguments(args, tensor_parallel_size=2).pipeline is False
