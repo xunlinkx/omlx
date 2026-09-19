@@ -976,7 +976,8 @@ def test_sequential_prefill_cancellation_halts_prompt_processing(monkeypatch):
                 has_tool_calling=False,
                 has_thinking=False,
                 tool_parser=lambda *_args: {},
-                sequences={},
+                text_sm=None,
+                initial_state="normal",
                 prompt=[1, 2, 3, 4],
             )
             rqueue.put(ctx)
