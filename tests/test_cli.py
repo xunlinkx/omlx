@@ -1056,6 +1056,27 @@ class TestServeCommandFunctions:
         assert "embedding_batch_size" in result.stdout
         assert not (tmp_path / "settings.json").exists()
 
+    def test_network_bind_without_api_key_exits_before_persisting(self, tmp_path):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "omlx.cli",
+                "serve",
+                "--base-path",
+                str(tmp_path),
+                "--host",
+                "0.0.0.0",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        assert result.returncode != 0
+        assert "API key is required" in result.stdout
+        assert not (tmp_path / "settings.json").exists()
+
     def test_invalid_memory_guard_gb_is_not_persisted(self, tmp_path):
         """Invalid custom memory guard values should fail before saving settings.json."""
         result = subprocess.run(
@@ -1520,7 +1541,15 @@ class TestLaunchClaudeTierPrecedence:
         execute.assert_called_once()
         binary, argv, env = execute.call_args.args
         assert binary == "claude"
-        assert argv == ["claude", "--disallowedTools", "LSP", "--resume", "session-id"]
+        assert argv == [
+            "claude",
+            "--disallowedTools",
+            "LSP",
+            "--settings",
+            '{"useAutoModeDuringPlan":false}',
+            "--resume",
+            "session-id",
+        ]
         assert env["ANTHROPIC_MODEL"] == "picked-model"
         assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "opus-cfg"
         assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "sonnet-cfg"
